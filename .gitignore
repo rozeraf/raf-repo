@@ -1,0 +1,5 @@
+noctalia-raf/src/
+noctalia-raf/pkg/
+noctalia-raf/*.tar.gz
+*.pkg.tar.zst
+*.log

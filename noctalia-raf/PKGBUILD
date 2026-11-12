@@ -1,0 +1,66 @@
+# Maintainer: raf
+# Noctalia built from an upstream release tag plus the local patches in
+# patches/ (applied in name order). Based on Arch's extra/noctalia PKGBUILD.
+# See docs/noctalia.md in noctalia-appmenu for the update workflow.
+
+_pkgname=noctalia
+pkgname=noctalia-raf
+pkgver=5.5.0
+pkgrel=1
+pkgdesc='A sleek, customizable desktop shell crafted for Wayland (with local patches)'
+arch=('x86_64')
+url='https://github.com/noctalia-dev/noctalia'
+license=('MIT')
+provides=("noctalia=${pkgver}")
+conflicts=('noctalia')
+depends=(
+  'bash' 'cairo' 'curl' 'fontconfig' 'freetype2' 'git' 'glib2' 'glibc' 'harfbuzz'
+  'hicolor-icon-theme' 'jemalloc' 'libgcc' 'libglvnd' 'libical' 'libjxl' 'libpipewire'
+  'libqalculate' 'librsvg' 'libsecret' 'libsndfile' 'libsodium' 'libstdc++' 'libwebp'
+  'libwireplumber' 'libxkbcommon' 'libxml2' 'md4c' 'pam' 'polkit' 'pango' 'sdbus-cpp'
+  'tomlplusplus' 'wayland'
+)
+optdepends=(
+  'ddcutil: monitor brightness control'
+  'power-profiles-daemon: power profile management'
+  'upower: battery and power device integration'
+)
+makedepends=('meson' 'ninja' 'nlohmann-json' 'pkgconf' 'stb' 'wayland-protocols')
+
+# Patches: keep this list in sync with patches/ (makepkg needs each file
+# listed to checksum it). Empty while running the plain upstream release.
+_patches=()
+
+source=("${_pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver//_/-}.tar.gz"
+        "${_patches[@]/#/patches/}")
+sha256sums=('f3fe8a1f1d4306280413e04f934400b787dba212d296d97dfd638bcb55c78262')
+
+prepare() {
+  cd "${_pkgname}-${pkgver//_/-}"
+  local p
+  for p in "${_patches[@]}"; do
+    echo "Applying ${p}"
+    patch -Np1 -i "${srcdir}/${p}"
+  done
+}
+
+build() {
+  CXXFLAGS+=" -Wno-unused-result"
+  arch-meson "${_pkgname}-${pkgver//_/-}" build-release \
+    -Db_ndebug=true \
+    -Dtests=disabled
+  meson compile -C build-release
+  for shell in bash fish zsh; do
+    build-release/noctalia completions "$shell" > "${shell}-completion"
+  done
+}
+
+package() {
+  meson install -C build-release --destdir "${pkgdir}"
+
+  install -Dm644 "${_pkgname}-${pkgver//_/-}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 "${_pkgname}-${pkgver//_/-}/README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -vDm644 bash-completion "$pkgdir/usr/share/bash-completion/completions/noctalia"
+  install -vDm644 fish-completion "$pkgdir/usr/share/fish/vendor_completions.d/noctalia.fish"
+  install -vDm644 zsh-completion "$pkgdir/usr/share/zsh/site-functions/_noctalia"
+}
