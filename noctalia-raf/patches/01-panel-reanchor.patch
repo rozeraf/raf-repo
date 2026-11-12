@@ -1,0 +1,434 @@
+From 806f1a391b9de0acc5f482a5d6712f450733a215 Mon Sep 17 00:00:00 2001
+From: raf <raf@localhost>
+Date: Thu, 12 Nov 2026 21:03:31 +0500
+Subject: [PATCH] panels: slide an open attached panel to a new click anchor;
+ noctalia.openPanel
+
+openPanel() on the already open attached panel (open near click) now moves
+the surface along the bar with an eased animation instead of destroying and
+reopening it. The bar seam/shadow cut-out, click shield rect and content-fit
+geometry follow. Plugins get noctalia.openPanel(id): open, never close; from a
+bar widget the request carries the pointer anchor, so a menu bar's dropdown can
+follow the hovered title (plugin API 54).
+---
+ docs/user/plugins/development/runtime-api.mdx |   1 +
+ src/app/application_services.cpp              |   8 +-
+ src/scripting/luau_host.cpp                   |  20 ++++
+ src/scripting/luau_host.h                     |   1 +
+ src/scripting/plugin_api.h                    |   3 +-
+ src/scripting/script_api_context.h            |  11 +-
+ src/scripting/script_runtime.cpp              |   4 +-
+ src/scripting/script_runtime.h                |   3 +-
+ src/scripting/script_runtime_types.h          |   2 +-
+ src/shell/bar/widgets/plugin_widget.cpp       |   6 +-
+ src/shell/panel/panel_manager.cpp             | 105 ++++++++++++++++++
+ src/shell/panel/panel_manager.h               |  21 ++++
+ 12 files changed, 172 insertions(+), 13 deletions(-)
+
+diff --git a/docs/user/plugins/development/runtime-api.mdx b/docs/user/plugins/development/runtime-api.mdx
+index 8704f6cae..2b99f712f 100644
+--- a/docs/user/plugins/development/runtime-api.mdx
++++ b/docs/user/plugins/development/runtime-api.mdx
+@@ -41,6 +41,7 @@ When a value an entry read through `getSetting` changes, the entry's `onConfigCh
+ | `noctalia.setWallpaperMask(connector, { path, wallpaperPath })` | nothing         | Applies a source-aligned grayscale occlusion mask to every desktop-widget surface on the output. Requires <PluginApiBadge feature="wallpaper-mask" />. |
+ | `noctalia.setWallpaperMask(connector, nil)`                     | nothing         | Clears this plugin runtime's mask from the output. Requires <PluginApiBadge feature="wallpaper-mask" />.                                               |
+ | `noctalia.togglePanel("author/plugin:panel")`                   | nothing         | Opens or closes a plugin panel by full entry id.                                                                                                       |
++| `noctalia.openPanel("author/plugin:panel")`                     | nothing         | Opens a plugin panel, never closes it. From a bar widget, an attached panel that opens near the click and is already open slides to the pointer instead of reopening: a menu bar whose dropdown follows the hovered title. Requires <PluginApiBadge feature="open-panel" />. |
+ | `noctalia.openSettings()`                                       | nothing         | Opens the settings window at this plugin's own settings, closing any open panel. Requires <PluginApiBadge feature="open-settings" />.                  |
+ 
+ `outputs()` uses the DRM connector name in `name`; that is the same connector string expected by compositor tools such as `mpvpaper`. A `[[service]]` may also define `onOutputsChanged()`, which Noctalia calls whenever the output set or geometry changes.
+diff --git a/src/app/application_services.cpp b/src/app/application_services.cpp
+index 6f85c9b8f..ec1816051 100644
+--- a/src/app/application_services.cpp
++++ b/src/app/application_services.cpp
+@@ -712,7 +712,13 @@ void Application::initStyleThemeAndWayland() {
+   });
+ 
+   // Let a plugin toggle one of its own panels.
+-  m_scriptApi.setTogglePanelHook([this](const std::string& panelId) { m_panelManager.togglePanel(panelId); });
++  m_scriptApi.setTogglePanelHook([this](const std::string& panelId, bool open) {
++    if (open) {
++      m_panelManager.showPanel(panelId, PanelOpenRequest{});
++    } else {
++      m_panelManager.togglePanel(panelId);
++    }
++  });
+ 
+   m_scriptApi.setIdleWatchHook([this](
+                                    std::uint64_t hostId, int watchId, std::uint32_t timeoutMs, bool ignoreInhibitors,
+diff --git a/src/scripting/luau_host.cpp b/src/scripting/luau_host.cpp
+index 040834c08..364220246 100644
+--- a/src/scripting/luau_host.cpp
++++ b/src/scripting/luau_host.cpp
+@@ -773,6 +773,17 @@ namespace {
+     return 0;
+   }
+ 
++  // openPanel(panelId) — like togglePanel, but never closes: an open panel stays open, and an
++  // attached panel opened near a click from a bar widget moves to the pointer.
++  int luau_openPanel(lua_State* L) {
++    size_t len = 0;
++    const char* panelId = luaL_checklstring(L, 1, &len);
++    if (auto* host = hostForState(L)) {
++      host->scriptOpenPanel(std::string(panelId, len));
++    }
++    return 0;
++  }
++
+   // openSettings() — open the settings window at this plugin's own settings. The plugin id comes
+   // from the host, so a plugin can only ever open its own page.
+   int luau_openSettings(lua_State* L) {
+@@ -2314,6 +2325,7 @@ namespace {
+       {"wallpaperPath", luau_wallpaperPath},
+       {"setWallpaperMask", luau_setWallpaperMask},
+       {"togglePanel", luau_togglePanel},
++      {"openPanel", luau_openPanel},
+       {"openSettings", luau_openSettings},
+       {"isDarkMode", luau_isDarkMode},
+       {"getColor", luau_getColor},
+@@ -3512,6 +3524,14 @@ void LuauHost::scriptTogglePanel(std::string panelId) {
+   }
+ }
+ 
++void LuauHost::scriptOpenPanel(std::string panelId) {
++  if (m_scriptContext != nullptr) {
++    m_scriptContext->sideEffects.push_back(
++        {.kind = scripting::ScriptSideEffectKind::TogglePanel, .title = std::move(panelId), .body = {}, .flag = true}
++    );
++  }
++}
++
+ void LuauHost::scriptOpenSettings() {
+   if (m_scriptContext != nullptr) {
+     m_scriptContext->sideEffects.push_back(
+diff --git a/src/scripting/luau_host.h b/src/scripting/luau_host.h
+index 31791be4f..c57ca0d24 100644
+--- a/src/scripting/luau_host.h
++++ b/src/scripting/luau_host.h
+@@ -235,6 +235,7 @@ public:
+   void scriptSetWallpaperMask(std::string outputName, std::string path, std::string wallpaperPath);
+   // Toggle a host panel by id ("author/plugin:panel"). Queued, applied on the main thread.
+   void scriptTogglePanel(std::string panelId);
++  void scriptOpenPanel(std::string panelId);
+   // Open the settings window at this plugin's own settings. Queued, applied on the main thread.
+   void scriptOpenSettings();
+   // noctalia.idle.watch()/unwatch(): compositor idle notifications. The Wayland objects live on
+diff --git a/src/scripting/plugin_api.h b/src/scripting/plugin_api.h
+index 75acfcb88..9b8e97171 100644
+--- a/src/scripting/plugin_api.h
++++ b/src/scripting/plugin_api.h
+@@ -53,7 +53,8 @@ namespace scripting {
+   inline constexpr std::uint32_t kMediaPlayerPluginApiVersion = 51;
+   inline constexpr std::uint32_t kDeclarativeCompositingPluginApiVersion = 52;
+   inline constexpr std::uint32_t kNightLightPluginApiVersion = 53;
+-  inline constexpr std::uint32_t kCurrentPluginApiVersion = kNightLightPluginApiVersion;
++  inline constexpr std::uint32_t kOpenPanelPluginApiVersion = 54;
++  inline constexpr std::uint32_t kCurrentPluginApiVersion = kOpenPanelPluginApiVersion;
+ 
+   static_assert(kOldestSupportedPluginApiVersion <= kCurrentPluginApiVersion);
+ 
+diff --git a/src/scripting/script_api_context.h b/src/scripting/script_api_context.h
+index df7b69c5f..64e854e6e 100644
+--- a/src/scripting/script_api_context.h
++++ b/src/scripting/script_api_context.h
+@@ -271,12 +271,13 @@ namespace scripting {
+ 
+     SystemMonitorService* systemMonitor() const noexcept { return m_systemMonitor.load(std::memory_order_acquire); }
+ 
+-    // Toggles a host panel by id. Wired to PanelManager in Application; main thread only.
+-    void setTogglePanelHook(std::function<void(const std::string&)> hook) { m_togglePanelHook = std::move(hook); }
++    // Toggles (open = false) or opens (open = true) a host panel by id. Wired to PanelManager in
++    // Application; main thread only.
++    void setTogglePanelHook(std::function<void(const std::string&, bool)> hook) { m_togglePanelHook = std::move(hook); }
+ 
+-    void invokeTogglePanel(const std::string& panelId) const {
++    void invokeTogglePanel(const std::string& panelId, bool open = false) const {
+       if (m_togglePanelHook) {
+-        m_togglePanelHook(panelId);
++        m_togglePanelHook(panelId, open);
+       }
+     }
+ 
+@@ -455,7 +456,7 @@ namespace scripting {
+     std::function<void(const std::string&, const std::string&)> m_wallpaperHook;
+     SetWallpaperMaskHook m_wallpaperMaskHook;
+     ClearWallpaperMasksHook m_clearWallpaperMasksHook;
+-    std::function<void(const std::string&)> m_togglePanelHook;
++    std::function<void(const std::string&, bool)> m_togglePanelHook;
+     std::function<void(const std::string&)> m_openPluginSettingsHook;
+     LoadSoundHook m_loadSoundHook;
+     PlaySoundHook m_playSoundHook;
+diff --git a/src/scripting/script_runtime.cpp b/src/scripting/script_runtime.cpp
+index 1a3e302ef..f290fcb5a 100644
+--- a/src/scripting/script_runtime.cpp
++++ b/src/scripting/script_runtime.cpp
+@@ -183,9 +183,9 @@ namespace scripting {
+           break;
+         case ScriptSideEffectKind::TogglePanel:
+           if (togglePanelCallback) {
+-            togglePanelCallback(effect.title);
++            togglePanelCallback(effect.title, effect.flag);
+           } else {
+-            api.invokeTogglePanel(effect.title);
++            api.invokeTogglePanel(effect.title, effect.flag);
+           }
+           break;
+         case ScriptSideEffectKind::OpenPluginSettings:
+diff --git a/src/scripting/script_runtime.h b/src/scripting/script_runtime.h
+index 23220d043..8f424e79f 100644
+--- a/src/scripting/script_runtime.h
++++ b/src/scripting/script_runtime.h
+@@ -38,7 +38,8 @@ namespace scripting {
+   class ScriptRuntime {
+   public:
+     using SubscriberId = std::uint64_t;
+-    using TogglePanelCallback = std::function<void(std::string_view)>;
++    // (panel id, open): open = true opens or moves the panel instead of toggling it.
++    using TogglePanelCallback = std::function<void(std::string_view, bool)>;
+ 
+     explicit ScriptRuntime(
+         std::string runtimeName, ScriptSettings settings, ScriptApiContext& api, std::filesystem::path pluginDir,
+diff --git a/src/scripting/script_runtime_types.h b/src/scripting/script_runtime_types.h
+index aae2b041c..44a9b3225 100644
+--- a/src/scripting/script_runtime_types.h
++++ b/src/scripting/script_runtime_types.h
+@@ -225,7 +225,7 @@ namespace scripting {
+     // SetWallpaperEnabled: title holds the output connector, flag the enabled state.
+     // SetWallpaper: title holds the output connector (empty = all outputs), body the image path.
+     // SetWallpaperMask: title holds output, body mask path, extra wallpaper path, and hostId the owner.
+-    // TogglePanel: title holds the panel id ("author/plugin:panel").
++    // TogglePanel: title holds the panel id ("author/plugin:panel"), flag requests open (never close).
+     // OpenPluginSettings: title holds the plugin id ("author/plugin").
+     // ShowOsd: title holds the glyph name, body the value text, number the progress (nullopt = no bar), flag the
+     // inactive state.
+diff --git a/src/shell/bar/widgets/plugin_widget.cpp b/src/shell/bar/widgets/plugin_widget.cpp
+index 2dd7a3020..20227fb26 100644
+--- a/src/shell/bar/widgets/plugin_widget.cpp
++++ b/src/shell/bar/widgets/plugin_widget.cpp
+@@ -297,12 +297,14 @@ void PluginWidget::create() {
+   auto alive = std::weak_ptr<bool>(m_alive);
+   m_runtime = std::make_shared<scripting::ScriptRuntime>(
+       m_entryId, m_settings, m_scriptApi, m_pluginDir, m_httpClient, m_clipboard,
+-      [this, alive](std::string_view panelId) {
++      [this, alive](std::string_view panelId, bool open) {
+         auto token = alive.lock();
+         if (token == nullptr || !*token) {
+           return;
+         }
+-        requestPanelToggle(panelId);
++        requestPanelToggle(
++            panelId, {}, std::nullopt, std::nullopt, open ? PanelActivation::Open : PanelActivation::Toggle
++        );
+       }
+   );
+ 
+diff --git a/src/shell/panel/panel_manager.cpp b/src/shell/panel/panel_manager.cpp
+index 880477a62..e881abddc 100644
+--- a/src/shell/panel/panel_manager.cpp
++++ b/src/shell/panel/panel_manager.cpp
+@@ -608,6 +608,11 @@ void PanelManager::openPanel(const std::string& panelId, PanelOpenRequest reques
+     return;
+   }
+ 
++  // The same panel opened again near a new click slides there instead of reopening.
++  if (slideAttachedPanel(panelId, request)) {
++    return;
++  }
++
+   if (m_closeDesktopWidgetsEditor) {
+     m_closeDesktopWidgetsEditor();
+   }
+@@ -1010,6 +1015,7 @@ void PanelManager::openPanel(const std::string& panelId, PanelOpenRequest reques
+     m_sourceBarName.clear();
+     m_attachedPanelGeometry.reset();
+     m_contentFit = {};
++    m_attachedSlide = {};
+     m_attachedToBar = false;
+     m_attachedOpenAnimationPending = false;
+   };
+@@ -1091,9 +1097,13 @@ void PanelManager::openPanel(const std::string& panelId, PanelOpenRequest reques
+       }
+       return centered;
+     };
++    std::int32_t slideMin = 0;
++    std::int32_t slideMax = 0;
+     if (barIsVertical) {
+       const auto minY = barTop + totalStartInset;
+       const auto maxY = std::max(minY, barBottom - static_cast<std::int32_t>(panelHeight) - totalEndInset);
++      slideMin = minY;
++      slideMax = maxY;
+       const auto centeredY = barTop + (barBottom - barTop - static_cast<std::int32_t>(panelHeight)) / 2;
+       const auto desiredY =
+           static_cast<std::int32_t>(std::lround(request.anchorY - static_cast<float>(panelHeight) * 0.5F));
+@@ -1102,6 +1112,8 @@ void PanelManager::openPanel(const std::string& panelId, PanelOpenRequest reques
+     } else {
+       const auto minX = barLeft + totalStartInset;
+       const auto maxX = std::max(minX, barRight - static_cast<std::int32_t>(panelWidth) - totalEndInset);
++      slideMin = minX;
++      slideMax = maxX;
+       const auto centeredX = barLeft + (barRight - barLeft - static_cast<std::int32_t>(panelWidth)) / 2;
+       const auto desiredX =
+           static_cast<std::int32_t>(std::lround(request.anchorX - static_cast<float>(panelWidth) * 0.5F));
+@@ -1119,6 +1131,9 @@ void PanelManager::openPanel(const std::string& panelId, PanelOpenRequest reques
+       surfaceX = visualX - crossOutsetStart;
+       surfaceY = barIsBottom ? visualY - mainBleedAway : visualY;
+     }
++    // Sliding moves the untrimmed surface by its along-bar margin; a surface trimmed at
++    // the start edge (below) reopens instead.
++    const bool slideable = useAnchorForAttached && (barIsVertical ? surfaceY : surfaceX) >= 0;
+     // Keep the surface origin on the output by trimming overhang past the start edges;
+     // the trimmed bleed is off-screen anyway. Hyprland picks a layer popup's monitor
+     // from the parent surface's top-left corner, so an origin on a neighboring output
+@@ -1220,6 +1235,20 @@ void PanelManager::openPanel(const std::string& panelId, PanelOpenRequest reques
+       attachedMarginTop = surfaceY - barReserved;
+     }
+ 
++    m_attachedSlide = AttachedSlide{
++        .enabled = slideable,
++        .vertical = barIsVertical,
++        .minPos = slideMin,
++        .maxPos = slideMax,
++        .panelMain = static_cast<std::int32_t>(barIsVertical ? panelHeight : panelWidth),
++        .crossOutsetStart = crossOutsetStart,
++        .visual = barIsVertical ? visualY : visualX,
++        .marginTop = attachedMarginTop,
++        .marginRight = attachedMarginRight,
++        .marginBottom = attachedMarginBottom,
++        .marginLeft = attachedMarginLeft,
++    };
++
+     auto attachedConfig = LayerSurfaceConfig{
+         .nameSpace = "noctalia-attached-panel",
+         .layer = panelLayer,
+@@ -1700,6 +1729,7 @@ void PanelManager::destroyPanel() {
+   m_sourceBarName.clear();
+   m_attachedPanelGeometry.reset();
+   m_contentFit = {};
++  m_attachedSlide = {};
+   m_attachedToBar = false;
+   m_attachedOpenAnimationPending = false;
+   if (m_platform != nullptr) {
+@@ -1714,6 +1744,81 @@ void PanelManager::destroyPanel() {
+   }
+ }
+ 
++bool PanelManager::slideAttachedPanel(const std::string& panelId, const PanelOpenRequest& request) {
++  if (!isOpen() || m_closing || m_activePanelId != panelId || m_activePanel == nullptr || !m_attachedToBar
++      || !m_attachedSlide.enabled || m_layerSurface == nullptr || !request.hasAnchorPosition
++      || (request.output != nullptr && request.output != m_output)
++      || (!request.sourceBarName.empty() && request.sourceBarName != m_sourceBarName)
++      || !openNearClickEnabled(m_activePanel, panelId, m_config)) {
++    return false;
++  }
++  // Still revealing: the reveal animates a fixed geometry, so let a reopen restart it.
++  if (m_attachedOpenAnimationPending || m_attachedRevealProgress < 1.0F) {
++    return false;
++  }
++
++  const float anchor = m_attachedSlide.vertical ? request.anchorY : request.anchorX;
++  const auto desired = static_cast<std::int32_t>(std::lround(anchor - static_cast<float>(m_attachedSlide.panelMain) * 0.5F));
++  const std::int32_t target = std::clamp(desired, m_attachedSlide.minPos, m_attachedSlide.maxPos);
++  if (target - m_attachedSlide.crossOutsetStart < 0) {
++    return false;
++  }
++
++  if (m_attachedSlide.animation != 0) {
++    m_animations.cancel(m_attachedSlide.animation);
++    m_attachedSlide.animation = 0;
++  }
++  if (target != m_attachedSlide.visual) {
++    m_attachedSlide.animation = m_animations.animate(
++        static_cast<float>(m_attachedSlide.visual), static_cast<float>(target), Style::animNormal,
++        Easing::EaseOutCubic, [this](float v) { applyAttachedSlide(static_cast<std::int32_t>(std::lround(v))); },
++        [this] { m_attachedSlide.animation = 0; }, m_sceneRoot.get()
++    );
++  }
++
++  // Same contract as showPanel on an open panel: a new context reaches the panel.
++  if (!request.context.empty() && !m_activePanel->isContextActive(request.context)) {
++    m_activePanel->onOpen(request.context);
++  }
++  refresh();
++  return true;
++}
++
++void PanelManager::applyAttachedSlide(std::int32_t visual) {
++  const std::int32_t delta = visual - m_attachedSlide.visual;
++  if (delta == 0 || m_layerSurface == nullptr) {
++    return;
++  }
++  m_attachedSlide.visual = visual;
++  const std::int32_t origin = visual - m_attachedSlide.crossOutsetStart;
++  const auto shift = [&](AttachedPanelGeometry& g) {
++    (m_attachedSlide.vertical ? g.y : g.x) += static_cast<float>(delta);
++  };
++  if (m_attachedSlide.vertical) {
++    m_attachedSlide.marginTop = origin;
++    m_contentFit.slotOutputY += delta;
++  } else {
++    m_attachedSlide.marginLeft = origin;
++  }
++  m_layerSurface->setMargins(
++      m_attachedSlide.marginTop, m_attachedSlide.marginRight, m_attachedSlide.marginBottom, m_attachedSlide.marginLeft
++  );
++  if (m_attachedPanelGeometry.has_value()) {
++    shift(*m_attachedPanelGeometry);
++  }
++  if (m_contentFit.attachedSlotGeometry.has_value()) {
++    shift(*m_contentFit.attachedSlotGeometry);
++  }
++  if (m_panelOutputInputRect.has_value()) {
++    (m_attachedSlide.vertical ? m_panelOutputInputRect->y : m_panelOutputInputRect->x) += delta;
++    if (m_output != nullptr) {
++      m_clickShield.setPanelInputRect(m_output, *m_panelOutputInputRect);
++    }
++  }
++  // The bar redraws its seam and shadow cut-out around the moved panel.
++  publishAttachedPanelGeometry(m_attachedRevealProgress);
++}
++
+ void PanelManager::togglePanel(const std::string& panelId, PanelOpenRequest request) {
+   if (m_persistentHost.hasPanel(panelId)) {
+     if (m_persistentHost.isOpen(panelId)) {
+diff --git a/src/shell/panel/panel_manager.h b/src/shell/panel/panel_manager.h
+index 4a5881ec7..3c8ed30f4 100644
+--- a/src/shell/panel/panel_manager.h
++++ b/src/shell/panel/panel_manager.h
+@@ -185,6 +185,10 @@ private:
+   void prepareFrame(bool needsUpdate, bool needsLayout);
+   void applyPendingPanelFocus();
+   void destroyPanel();
++  // Moves an open attached, open-near-click panel to a new anchor along its bar
++  // instead of reopening it. Returns false when the panel can't slide there.
++  bool slideAttachedPanel(const std::string& panelId, const PanelOpenRequest& request);
++  void applyAttachedSlide(std::int32_t visual);
+   static void handleCaptureCloseFrame(void* data, wl_callback* callback, std::uint32_t time);
+   // Called before the panel surface commits so outside-click dismissal is ready
+   // for its first frame. The panel rect is excluded separately because
+@@ -293,6 +297,23 @@ private:
+     AnimationManager::Id animation = 0;
+   };
+   ContentFit m_contentFit;
++  // An attached panel placed near a click can follow a new anchor along the bar
++  // (a bar menu whose dropdown follows the hovered title). Captured at open.
++  struct AttachedSlide {
++    bool enabled = false;
++    bool vertical = false; // the bar is vertical: the panel slides along Y
++    std::int32_t minPos = 0; // visual start position range along the bar
++    std::int32_t maxPos = 0;
++    std::int32_t panelMain = 0; // panel extent along the bar
++    std::int32_t crossOutsetStart = 0; // surface origin = visual - crossOutsetStart
++    std::int32_t visual = 0; // current visual start position along the bar
++    std::int32_t marginTop = 0;
++    std::int32_t marginRight = 0;
++    std::int32_t marginBottom = 0;
++    std::int32_t marginLeft = 0;
++    AnimationManager::Id animation = 0;
++  };
++  AttachedSlide m_attachedSlide;
+   // Fill axes derive their visual size from the compositor-configured surface
+   // size in buildScene; that math also needs the trailing shadow bleed.
+   bool m_panelFillWidth = false;
+-- 
+2.56.0
+
