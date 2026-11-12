@@ -1,8 +1,8 @@
 From 806f1a391b9de0acc5f482a5d6712f450733a215 Mon Sep 17 00:00:00 2001
 From: raf <raf@localhost>
 Date: Thu, 12 Nov 2026 21:03:31 +0500
-Subject: [PATCH] panels: slide an open attached panel to a new click anchor;
- noctalia.openPanel
+Subject: [PATCH 1/2] panels: slide an open attached panel to a new click
+ anchor; noctalia.openPanel
 
 openPanel() on the already open attached panel (open near click) now moves
 the surface along the bar with an eased animation instead of destroying and
@@ -429,6 +429,73 @@ index 4a5881ec7..3c8ed30f4 100644
    // Fill axes derive their visual size from the compositor-configured surface
    // size in buildScene; that math also needs the trailing shadow bleed.
    bool m_panelFillWidth = false;
+-- 
+2.56.0
+
+
+From fe8a9a78e49b31205a2f2ce87c6d1bb7fc80b9bd Mon Sep 17 00:00:00 2001
+From: raf <raf@localhost>
+Date: Thu, 12 Nov 2026 22:25:03 +0500
+Subject: [PATCH 2/2] panels: keep near-click attached panels slideable at the
+ bar start; slower ease-out slide
+
+A panel opened near the bar's start edge had its surface trimmed, which made
+it unslideable, so the first move after opening reopened it. Anchored panels
+now keep the surface whole (the start bound moves in by at most the shadow
+bleed). The slide runs 260 ms with a decelerating ease.
+---
+ src/shell/panel/panel_manager.cpp | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/src/shell/panel/panel_manager.cpp b/src/shell/panel/panel_manager.cpp
+index e881abddc..14116a831 100644
+--- a/src/shell/panel/panel_manager.cpp
++++ b/src/shell/panel/panel_manager.cpp
+@@ -1100,7 +1100,10 @@ void PanelManager::openPanel(const std::string& panelId, PanelOpenRequest reques
+     std::int32_t slideMin = 0;
+     std::int32_t slideMax = 0;
+     if (barIsVertical) {
+-      const auto minY = barTop + totalStartInset;
++      // A panel placed near a click keeps its surface whole (no start-edge trim below), so it
++      // can slide to a later click; the start bound moves in by at most the shadow bleed.
++      const auto minY = useAnchorForAttached ? std::max(barTop + totalStartInset, crossOutsetStart)
++                                             : barTop + totalStartInset;
+       const auto maxY = std::max(minY, barBottom - static_cast<std::int32_t>(panelHeight) - totalEndInset);
+       slideMin = minY;
+       slideMax = maxY;
+@@ -1110,7 +1113,8 @@ void PanelManager::openPanel(const std::string& panelId, PanelOpenRequest reques
+       visualY = alongBar(minY, maxY, centeredY, desiredY);
+       visualX = barIsLeft ? barRight - panelOverlap : barLeft - static_cast<std::int32_t>(panelWidth) + panelOverlap;
+     } else {
+-      const auto minX = barLeft + totalStartInset;
++      const auto minX = useAnchorForAttached ? std::max(barLeft + totalStartInset, crossOutsetStart)
++                                             : barLeft + totalStartInset;
+       const auto maxX = std::max(minX, barRight - static_cast<std::int32_t>(panelWidth) - totalEndInset);
+       slideMin = minX;
+       slideMax = maxX;
+@@ -1744,6 +1748,10 @@ void PanelManager::destroyPanel() {
+   }
+ }
+ 
++namespace {
++  constexpr float kAttachedSlideMs = 260.0F;
++} // namespace
++
+ bool PanelManager::slideAttachedPanel(const std::string& panelId, const PanelOpenRequest& request) {
+   if (!isOpen() || m_closing || m_activePanelId != panelId || m_activePanel == nullptr || !m_attachedToBar
+       || !m_attachedSlide.enabled || m_layerSurface == nullptr || !request.hasAnchorPosition
+@@ -1769,8 +1777,10 @@ bool PanelManager::slideAttachedPanel(const std::string& panelId, const PanelOpe
+     m_attachedSlide.animation = 0;
+   }
+   if (target != m_attachedSlide.visual) {
++    // Decelerating ease over a little more than a reveal: the panel leaves quickly and settles
++    // under the new anchor.
+     m_attachedSlide.animation = m_animations.animate(
+-        static_cast<float>(m_attachedSlide.visual), static_cast<float>(target), Style::animNormal,
++        static_cast<float>(m_attachedSlide.visual), static_cast<float>(target), kAttachedSlideMs,
+         Easing::EaseOutCubic, [this](float v) { applyAttachedSlide(static_cast<std::int32_t>(std::lround(v))); },
+         [this] { m_attachedSlide.animation = 0; }, m_sceneRoot.get()
+     );
 -- 
 2.56.0
 

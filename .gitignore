@@ -4,3 +4,4 @@ noctalia-raf/*.tar.gz
 *.pkg.tar.zst
 *.log
 noctalia-raf/stock/
+noctalia-raf/old/
