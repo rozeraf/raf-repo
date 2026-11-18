@@ -6,7 +6,7 @@
 _pkgname=noctalia
 pkgname=noctalia-raf
 pkgver=5.5.0
-pkgrel=3
+pkgrel=4
 pkgdesc='A sleek, customizable desktop shell crafted for Wayland (with local patches)'
 arch=('x86_64')
 url='https://github.com/noctalia-dev/noctalia'
@@ -38,7 +38,7 @@ source=("${_pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver//_/-}.
         "${_patches[@]/#/patches/}")
 sha256sums=('f3fe8a1f1d4306280413e04f934400b787dba212d296d97dfd638bcb55c78262'
             '321289215c72fd4d02bffe30cd0ae578b84716147bfddcb81523e658d6f64545'
-            '5c74027d9c79972875bbcc7fce9b28159dea160299be9c826ff144a4f458505d')
+            '1bb0d5f0eef85fafca6841afb665754baf2e8fc143a412d1b2490d49c5099141')
 
 prepare() {
   cd "${_pkgname}-${pkgver//_/-}"
