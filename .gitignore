@@ -5,4 +5,3 @@ noctalia-raf/*.tar.gz
 *.log
 noctalia-raf/stock/
 noctalia-raf/old/
-noctalia-raf/*.patch

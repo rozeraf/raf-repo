@@ -1,12 +1,12 @@
 # Maintainer: raf
-# Noctalia built from an upstream release tag plus the local patches in
-# patches/ (applied in name order). Based on Arch's extra/noctalia PKGBUILD.
+# Noctalia built from an upstream release tag plus the local *.patch files
+# next to this PKGBUILD (applied in name order). Based on Arch's extra/noctalia PKGBUILD.
 # See docs/noctalia.md in noctalia-appmenu for the update workflow.
 
 _pkgname=noctalia
 pkgname=noctalia-raf
-pkgver=5.5.0
-pkgrel=4
+pkgver=5.6.0
+pkgrel=1
 pkgdesc='A sleek, customizable desktop shell crafted for Wayland (with local patches)'
 arch=('x86_64')
 url='https://github.com/noctalia-dev/noctalia'
@@ -27,18 +27,16 @@ optdepends=(
 )
 makedepends=('meson' 'ninja' 'nlohmann-json' 'pkgconf' 'stb' 'wayland-protocols')
 
-# Patches: keep this list in sync with patches/ (makepkg needs each file
+# Patches: keep this list in sync with the *.patch files here (makepkg needs each file
 # listed to checksum it). Empty while running the plain upstream release.
 _patches=(
   01-panel-reanchor.patch
-  02-bar-hover-sync.patch
 )
 
 source=("${_pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver//_/-}.tar.gz"
-        "${_patches[@]/#/patches/}")
-sha256sums=('f3fe8a1f1d4306280413e04f934400b787dba212d296d97dfd638bcb55c78262'
-            '321289215c72fd4d02bffe30cd0ae578b84716147bfddcb81523e658d6f64545'
-            '1bb0d5f0eef85fafca6841afb665754baf2e8fc143a412d1b2490d49c5099141')
+        "${_patches[@]}")
+sha256sums=('c2f0fcc30bae289ecc39ab495ae68120c5882902371cde14f4f08b8bf14210a1'
+            '41eaae48ed599a79b4cc8e20dae2faa93e3689f2288d2a9701457f9b8d625624')
 
 prepare() {
   cd "${_pkgname}-${pkgver//_/-}"
